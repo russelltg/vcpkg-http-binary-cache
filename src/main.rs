@@ -10,7 +10,7 @@ use clap::Parser;
 use futures::TryStreamExt;
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{fs, io, net::{SocketAddr, IpAddr}, path::PathBuf, sync::Arc};
 use tokio::{fs::File, io::BufWriter};
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -21,6 +21,9 @@ struct Args {
 
     #[clap(long, default_value = "3000")]
     port: u16,
+
+    #[clap(long, default_value = "127.0.0.1")]
+    local_addr: IpAddr,
 }
 
 #[tokio::main]
@@ -40,7 +43,7 @@ async fn main() {
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let addr = SocketAddr::from((args.local_addr, args.port));
     tracing::debug!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
