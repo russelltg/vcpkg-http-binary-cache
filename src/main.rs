@@ -121,11 +121,12 @@ async fn cache_put(
     let body_reader = StreamReader::new(body_with_io_error);
     futures::pin_mut!(body_reader);
 
-    info!("Writing to {}", cache_path.display());
 
-    tokio::io::copy(&mut body_reader, &mut file)
+    let bytes = tokio::io::copy(&mut body_reader, &mut file)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    info!("Wrote {} to {}", human_bytes::human_bytes(bytes as f64), cache_path.display());
 
     Ok(())
 }
