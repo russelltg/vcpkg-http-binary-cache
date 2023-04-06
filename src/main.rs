@@ -8,11 +8,16 @@ use axum::{
 };
 use clap::Parser;
 use futures::TryStreamExt;
-use tower_http::trace::TraceLayer;
-use tracing::info;
-use std::{fs, io, net::{SocketAddr, IpAddr}, path::PathBuf, sync::Arc};
+use std::{
+    fs, io,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::{fs::File, io::BufWriter};
 use tokio_util::io::{ReaderStream, StreamReader};
+use tower_http::trace::TraceLayer;
+use tracing::info;
 
 #[derive(clap::Parser)]
 struct Args {
@@ -36,6 +41,7 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/cache/:hash", get(cache_get))
+        .route("/status", get(|| async { "online" }))
         .route("/cache/:hash", head(cache_head))
         .route("/cache/:hash", put(cache_put))
         .layer(TraceLayer::new_for_http())
@@ -121,12 +127,15 @@ async fn cache_put(
     let body_reader = StreamReader::new(body_with_io_error);
     futures::pin_mut!(body_reader);
 
-
     let bytes = tokio::io::copy(&mut body_reader, &mut file)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    info!("Wrote {} to {}", human_bytes::human_bytes(bytes as f64), cache_path.display());
+    info!(
+        "Wrote {} to {}",
+        human_bytes::human_bytes(bytes as f64),
+        cache_path.display()
+    );
 
     Ok(())
 }
