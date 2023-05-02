@@ -1,5 +1,5 @@
 use axum::{
-    body::StreamBody,
+    body::{Bytes, StreamBody},
     extract::{BodyStream, Path, State},
     http::StatusCode,
     response::IntoResponse,
@@ -7,7 +7,7 @@ use axum::{
     Router,
 };
 use clap::Parser;
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use std::{
     fs, io,
     net::{IpAddr, SocketAddr},
@@ -22,7 +22,10 @@ use tracing::info;
 #[derive(clap::Parser)]
 struct Args {
     #[clap(long)]
-    root: PathBuf,
+    binary_root: PathBuf,
+
+    #[clap(long)]
+    asset_root: PathBuf,
 
     #[clap(long, default_value = "3000")]
     port: u16,
@@ -44,6 +47,7 @@ async fn main() {
         .route("/status", get(|| async { "online" }))
         .route("/cache/:hash", head(cache_head))
         .route("/cache/:hash", put(cache_put))
+        .route("/asset/:hash", put(asset_put))
         .layer(TraceLayer::new_for_http())
         .with_state(args.clone());
 
@@ -73,7 +77,7 @@ async fn cache_get(
     State(state): State<Arc<Args>>,
     Path(hash): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let cache_path = hash_to_file(&state.root, &hash)?;
+    let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
     if !cache_path.exists() {
         return Err((
@@ -93,7 +97,7 @@ async fn cache_head(
     State(state): State<Arc<Args>>,
     Path(hash): Path<String>,
 ) -> Result<(), (StatusCode, String)> {
-    let cache_path = hash_to_file(&state.root, &hash)?;
+    let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
     if !cache_path.exists() {
         return Err((
@@ -105,36 +109,61 @@ async fn cache_head(
     Ok(())
 }
 
+async fn write_stream_to_file(
+    path: &std::path::Path,
+    stream: impl Stream<Item = Result<Bytes, axum::Error>>,
+) -> Result<u64, io::Error> {
+    let mut file = BufWriter::new(File::create(path).await?);
+
+    let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+    let body_reader = StreamReader::new(body_with_io_error);
+    futures::pin_mut!(body_reader);
+
+    let bytes = tokio::io::copy(&mut body_reader, &mut file).await?;
+
+    Ok(bytes)
+}
+
 async fn cache_put(
     State(state): State<Arc<Args>>,
     Path(hash): Path<String>,
     body: BodyStream,
 ) -> Result<(), (StatusCode, String)> {
-    let cache_path = hash_to_file(&state.root, &hash)?;
+    let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
     if !cache_path.parent().unwrap().exists() {
         fs::create_dir(cache_path.parent().unwrap())
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    let mut file = BufWriter::new(
-        File::create(&cache_path)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-    );
-
-    let body_with_io_error = body.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-    let body_reader = StreamReader::new(body_with_io_error);
-    futures::pin_mut!(body_reader);
-
-    let bytes = tokio::io::copy(&mut body_reader, &mut file)
+    let bytes = write_stream_to_file(&cache_path, body)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     info!(
-        "Wrote {} to {}",
+        "Wrote {} to {} for binary cache",
         human_bytes::human_bytes(bytes as f64),
         cache_path.display()
+    );
+
+    Ok(())
+}
+
+async fn asset_put(
+    State(state): State<Arc<Args>>,
+    Path(hash): Path<String>,
+    body: BodyStream,
+) -> Result<(), (StatusCode, String)> {
+    let path = state.asset_root.join(hash);
+
+    let bytes = write_stream_to_file(&path, body)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    info!(
+        "Wrote {} to {} for asset cache",
+        human_bytes::human_bytes(bytes as f64),
+        path.display()
     );
 
     Ok(())
