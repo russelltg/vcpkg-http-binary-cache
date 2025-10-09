@@ -43,11 +43,11 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        .route("/cache/:hash", get(cache_get))
+        .route("/cache/{hash}", get(cache_get))
         .route("/status", get(|| async { "online" }))
-        .route("/cache/:hash", head(cache_head))
-        .route("/cache/:hash", put(cache_put))
-        .route("/asset/:hash", put(asset_put))
+        .route("/cache/{hash}", head(cache_head))
+        .route("/cache/{hash}", put(cache_put))
+        .route("/asset/{hash}", put(asset_put))
         .layer(TraceLayer::new_for_http())
         .with_state(args.clone());
 
