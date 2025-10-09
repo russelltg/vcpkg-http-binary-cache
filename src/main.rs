@@ -17,7 +17,7 @@ use std::{
 use tokio::{fs::File, io::BufWriter, net::TcpListener};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -127,9 +127,16 @@ async fn write_stream_to_file(
     let body_reader = StreamReader::new(body_with_io_error);
     futures::pin_mut!(body_reader);
 
-    let bytes = tokio::io::copy(&mut body_reader, &mut file).await?;
-
-    Ok(bytes)
+    match tokio::io::copy(&mut body_reader, &mut file).await {
+        Err(e) => {
+            info!("removing incomplete file {}", path.display());
+            if let Err(e) = fs::remove_file(path) {
+                warn!("failed to remove incomplete file {}: {}", path.display(), e);
+            }
+            Err(e)
+        }
+        Ok(bytes) => Ok(bytes),
+    }
 }
 
 async fn cache_put(
