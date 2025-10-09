@@ -1,7 +1,7 @@
 use axum::{
-    body::{Bytes, StreamBody},
-    extract::{BodyStream, Path, State},
-    http::{HeaderMap, StatusCode},
+    body::{Body, Bytes},
+    extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, head, put},
     Router,
@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tokio::{fs::File, io::BufWriter};
+use tokio::{fs::File, io::BufWriter, net::TcpListener};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -55,10 +55,12 @@ async fn main() {
     // `axum::Server` is a re-export of `hyper::Server`
     let addr = SocketAddr::from((args.local_addr, args.port));
     tracing::debug!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    axum::serve(
+        TcpListener::bind(&addr).await.unwrap(),
+        app.into_make_service(),
+    )
+    .await
+    .unwrap();
 }
 
 fn hash_to_file(root: &std::path::Path, hash: &str) -> Result<PathBuf, (StatusCode, String)> {
@@ -89,17 +91,9 @@ async fn cache_get(
         Ok(meta) => meta,
     };
 
-    let headers = HeaderMap::from_iter(
-        [(
-            axum::http::header::CONTENT_LENGTH,
-            meta.len().to_string().parse().unwrap(),
-        )]
-        .into_iter(),
-    );
-
     Ok((
-        headers,
-        StreamBody::new(ReaderStream::new(
+        [(axum::http::header::CONTENT_LENGTH, meta.len().to_string())],
+        Body::from_stream(ReaderStream::new(
             tokio::fs::File::open(cache_path)
                 .await
                 .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?,
@@ -129,7 +123,7 @@ async fn write_stream_to_file(
 ) -> Result<u64, io::Error> {
     let mut file = BufWriter::new(File::create(path).await?);
 
-    let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+    let body_with_io_error = stream.map_err(io::Error::other);
     let body_reader = StreamReader::new(body_with_io_error);
     futures::pin_mut!(body_reader);
 
@@ -141,7 +135,7 @@ async fn write_stream_to_file(
 async fn cache_put(
     State(state): State<Arc<Args>>,
     Path(hash): Path<String>,
-    body: BodyStream,
+    body: Body,
 ) -> Result<(), (StatusCode, String)> {
     let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
@@ -150,7 +144,7 @@ async fn cache_put(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    let bytes = write_stream_to_file(&cache_path, body)
+    let bytes = write_stream_to_file(&cache_path, body.into_data_stream())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -166,11 +160,11 @@ async fn cache_put(
 async fn asset_put(
     State(state): State<Arc<Args>>,
     Path(hash): Path<String>,
-    body: BodyStream,
+    body: Body,
 ) -> Result<(), (StatusCode, String)> {
     let path = state.asset_root.join(hash);
 
-    let bytes = write_stream_to_file(&path, body)
+    let bytes = write_stream_to_file(&path, body.into_data_stream())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
