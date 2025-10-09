@@ -1,7 +1,7 @@
 use axum::{
     body::{Bytes, StreamBody},
     extract::{BodyStream, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, head, put},
     Router,
@@ -79,18 +79,32 @@ async fn cache_get(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
-    if !cache_path.exists() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("{} does not exist", cache_path.display()),
-        ));
-    }
+    let meta = match fs::metadata(&cache_path) {
+        Err(e) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("failed to fetch {}: {}", cache_path.display(), e),
+            ));
+        }
+        Ok(meta) => meta,
+    };
 
-    Ok(StreamBody::new(ReaderStream::new(
-        tokio::fs::File::open(cache_path)
-            .await
-            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?,
-    )))
+    let headers = HeaderMap::from_iter(
+        [(
+            axum::http::header::CONTENT_LENGTH,
+            meta.len().to_string().parse().unwrap(),
+        )]
+        .into_iter(),
+    );
+
+    Ok((
+        headers,
+        StreamBody::new(ReaderStream::new(
+            tokio::fs::File::open(cache_path)
+                .await
+                .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?,
+        )),
+    ))
 }
 
 async fn cache_head(
