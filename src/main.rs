@@ -9,15 +9,17 @@ use axum::{
 use clap::Parser;
 use futures::{Stream, TryStreamExt};
 use std::{
-    fs, io,
+    fs,
+    io::{self},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
 };
-use tokio::{fs::File, io::BufWriter, net::TcpListener};
+use tempfile::NamedTempFile;
+use tokio::{fs::File, net::TcpListener};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(clap::Parser)]
 struct Args {
@@ -121,22 +123,17 @@ async fn write_stream_to_file(
     path: &std::path::Path,
     stream: impl Stream<Item = Result<Bytes, axum::Error>>,
 ) -> Result<u64, io::Error> {
-    let mut file = BufWriter::new(File::create(path).await?);
+    let tmp_file = NamedTempFile::new_in(path.parent().unwrap())?;
+    let mut tmp_file_async = File::from_std(tmp_file.as_file().try_clone().unwrap());
 
     let body_with_io_error = stream.map_err(io::Error::other);
     let body_reader = StreamReader::new(body_with_io_error);
     futures::pin_mut!(body_reader);
+    let bytes = tokio::io::copy(&mut body_reader, &mut tmp_file_async).await?;
+    drop(tmp_file_async);
 
-    match tokio::io::copy(&mut body_reader, &mut file).await {
-        Err(e) => {
-            info!("removing incomplete file {}", path.display());
-            if let Err(e) = fs::remove_file(path) {
-                warn!("failed to remove incomplete file {}: {}", path.display(), e);
-            }
-            Err(e)
-        }
-        Ok(bytes) => Ok(bytes),
-    }
+    fs::rename(tmp_file.keep()?.1, path)?;
+    Ok(bytes)
 }
 
 async fn cache_put(
