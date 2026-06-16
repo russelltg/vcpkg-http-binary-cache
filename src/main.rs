@@ -83,23 +83,21 @@ async fn cache_get(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let cache_path = hash_to_file(&state.binary_root, &hash)?;
 
-    let meta = match fs::metadata(&cache_path) {
-        Err(e) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!("failed to fetch {}: {}", cache_path.display(), e),
-            ));
-        }
-        Ok(meta) => meta,
-    };
+    let file = tokio::fs::File::open(&cache_path).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("failed to fetch {}: {}", cache_path.display(), e),
+        )
+    })?;
+    let len = file
+        .metadata()
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?
+        .len();
 
     Ok((
-        [(axum::http::header::CONTENT_LENGTH, meta.len().to_string())],
-        Body::from_stream(ReaderStream::new(
-            tokio::fs::File::open(cache_path)
-                .await
-                .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?,
-        )),
+        [(axum::http::header::CONTENT_LENGTH, len.to_string())],
+        Body::from_stream(ReaderStream::with_capacity(file, 256 * 1024)),
     ))
 }
 
